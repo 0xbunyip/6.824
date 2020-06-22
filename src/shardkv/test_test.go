@@ -1,7 +1,7 @@
 package shardkv
 
-import "../porcupine"
-import "../models"
+import "lab1/src/porcupine"
+import "lab1/src/models"
 import "testing"
 import "strconv"
 import "time"

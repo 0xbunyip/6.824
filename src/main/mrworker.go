@@ -10,7 +10,7 @@ package main
 // Please do not change this file.
 //
 
-import "../mr"
+import "lab1/src/mr"
 import "plugin"
 import "os"
 import "fmt"
