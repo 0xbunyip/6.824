@@ -24,6 +24,13 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 
+type RequestTaskArgs struct {
+}
+
+type RequestTaskReply struct {
+	Filename string
+	IsMap    bool // true for Map task, false for Reduce task
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the master.
