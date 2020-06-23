@@ -1,9 +1,13 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
+import (
+	"fmt"
+	"hash/fnv"
+	"io/ioutil"
+	"log"
+	"net/rpc"
+	"os"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -33,7 +37,25 @@ func Worker(mapf func(string, string) []KeyValue,
 	args := RequestTaskArgs{}
 	reply := RequestTaskReply{}
 	call("Master.RequestTask", &args, &reply)
-	fmt.Println(reply)
+
+	file, err := os.Open(reply.Filename)
+	if err != nil {
+		log.Fatalf("cannot open %v", reply.Filename)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", reply.Filename)
+	}
+	file.Close()
+	kva := mapf(reply.Filename, string(content))
+	cnt := 0
+	for key, val := range kva {
+		fmt.Println(key, val)
+		cnt++
+		if cnt > 10 {
+			break
+		}
+	}
 
 	// uncomment to send the Example RPC to the master.
 	// CallExample()
