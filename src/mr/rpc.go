@@ -28,8 +28,10 @@ type RequestTaskArgs struct {
 }
 
 type RequestTaskReply struct {
-	Filename string
-	IsMap    bool // true for Map task, false for Reduce task
+	Filenames []string
+	IsMap     bool // true for Map task, false for Reduce task
+	ID        int
+	NumReduce int
 }
 
 // Cook up a unique-ish UNIX-domain socket name

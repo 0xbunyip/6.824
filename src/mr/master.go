@@ -16,12 +16,12 @@ type Master struct {
 }
 
 type MapMaster struct {
-	mapTasks []*MapTask
+	mapTasks []*MasterMapTask
 	nMapDone int
 	lock     sync.RWMutex
 }
 
-type MapTask struct {
+type MasterMapTask struct {
 	filename string
 	status   TaskStatus
 }
@@ -53,14 +53,14 @@ func (m *Master) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) err
 	// TODO: allow worker to start shuffling phase as soon as first map finished
 	if task, ok := m.mapMaster.BookIdleTask(); ok {
 		// Map phase
-		reply.Filename = task.filename
+		reply.Filenames = []string{task.filename}
 		reply.IsMap = true
 	} else {
 	}
 	return nil
 }
 
-func (m *MapMaster) BookIdleTask() (MapTask, bool) {
+func (m *MapMaster) BookIdleTask() (MasterMapTask, bool) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	for _, task := range m.mapTasks {
@@ -71,7 +71,7 @@ func (m *MapMaster) BookIdleTask() (MapTask, bool) {
 		task.status = InProgress // TODO: timeout task after 10s
 		return *task, true
 	}
-	return MapTask{}, false
+	return MasterMapTask{}, false
 }
 
 //
@@ -108,9 +108,9 @@ func (m *Master) Done() bool {
 // nReduce is the number of reduce tasks to use.
 //
 func MakeMaster(files []string, nReduce int) *Master {
-	mapTasks := make([]*MapTask, len(files))
+	mapTasks := make([]*MasterMapTask, len(files))
 	for i, file := range files {
-		mapTasks[i] = &MapTask{
+		mapTasks[i] = &MasterMapTask{
 			filename: file,
 			status:   Idle,
 		}
