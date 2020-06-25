@@ -18,12 +18,15 @@ type Master struct {
 type MapMaster struct {
 	mapTasks []*MasterMapTask
 	nMapDone int
+	nReduce  int
 	lock     sync.RWMutex
 }
 
 type MasterMapTask struct {
 	filename string
 	status   TaskStatus
+	id       int
+	nReduce  int
 }
 
 type ReduceMaster struct {
@@ -55,6 +58,8 @@ func (m *Master) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) err
 		// Map phase
 		reply.Filenames = []string{task.filename}
 		reply.IsMap = true
+		reply.NumReduce = task.nReduce
+		reply.ID = task.id
 	} else {
 	}
 	return nil
@@ -63,12 +68,14 @@ func (m *Master) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) err
 func (m *MapMaster) BookIdleTask() (MasterMapTask, bool) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	for _, task := range m.mapTasks {
+	for i, task := range m.mapTasks {
 		if task.status != Idle {
 			continue
 		}
 
 		task.status = InProgress // TODO: timeout task after 10s
+		task.id = i
+		task.nReduce = m.nReduce
 		return *task, true
 	}
 	return MasterMapTask{}, false
@@ -121,6 +128,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 			mapTasks: mapTasks,
 			nMapDone: 0,
 			lock:     sync.RWMutex{},
+			nReduce:  nReduce,
 		},
 		reduceMaster: &ReduceMaster{},
 	}
