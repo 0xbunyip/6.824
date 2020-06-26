@@ -78,16 +78,34 @@ func (t *Tasker) doMap(task WorkerTask) {
 		}
 
 		// Do map
+		log.Println("performing map of task", task.id)
 		kvs := t.mapf(filename, string(content))
 
 		// Output
-		writeMapOutput(task.id, task.nReduce, kvs)
+		out, err := writeMapOutput(task.id, task.nReduce, kvs)
+
+		// Return result to master
+		if err == nil {
+			notifyMapComplete(task.id, out)
+		}
 	}
 	atomic.AddInt32(&t.numTasks, -1)
 }
 
+func notifyMapComplete(id int, outfiles map[int]string) {
+	log.Printf("sending map result: id = %v, num files = %v", id, len(outfiles))
+	args := &TaskCompletedArgs{
+		IsMap:       true,
+		ID:          id,
+		OutputFiles: outfiles,
+	}
+	reply := &TaskCompletedReply{}
+	call("Master.NotifyTaskComplete", &args, &reply)
+}
+
 func (t *Tasker) doReduce(task WorkerTask) {
 	// Read intermidiate files
+	log.Println("reduce: reading intermediate files for task", task.id)
 	kvs := []KeyValue{}
 	for _, filename := range task.filenames {
 		kv, err := readReduceInput(filename)
@@ -102,6 +120,7 @@ func (t *Tasker) doReduce(task WorkerTask) {
 	sort.Sort(ByKey(kvs))
 
 	// Do reduce
+	log.Printf("reduce: performing task %d with %d keys", task.id, len(kvs))
 	oname := fmt.Sprintf("mr-out-%d", task.id)
 	file, _ := os.Create(oname)
 	for i, j := 0, 0; i < len(kvs); i = j {
@@ -118,10 +137,31 @@ func (t *Tasker) doReduce(task WorkerTask) {
 		// Output
 		fmt.Fprintf(file, "%v %v\n", kvs[i].Key, output)
 	}
-	file.Close()
+	err := file.Close()
+
+	// Return result to master
+	if err != nil {
+		notifyReduceComplete(task.id, map[int]string{
+			task.id: oname,
+		})
+	}
+
+	atomic.AddInt32(&t.numTasks, -1)
+}
+
+func notifyReduceComplete(id int, outfiles map[int]string) {
+	log.Printf("sending reduce result: id = %v, files = %v", id, outfiles)
+	args := &TaskCompletedArgs{
+		IsMap:       false,
+		ID:          id,
+		OutputFiles: outfiles,
+	}
+	reply := &TaskCompletedReply{}
+	call("Master.NotifyTaskComplete", &args, &reply)
 }
 
 func readMapInput(filename string) (string, error) {
+	log.Println("reading map input of file:", filename)
 	file, err := os.Open(filename)
 	if err != nil {
 		return "", fmt.Errorf("cannot open %v: %w", filename, err)
@@ -153,7 +193,8 @@ func readReduceInput(filename string) ([]KeyValue, error) {
 	return kvs, nil
 }
 
-func writeMapOutput(mapID, nReduce int, kvs []KeyValue) {
+func writeMapOutput(mapID, nReduce int, kvs []KeyValue) (map[int]string, error) {
+	log.Printf("writing map output: id = %v, len(kvs) = %v", mapID, len(kvs))
 	sort.Sort(ByKeyHash{
 		kvs: kvs,
 		hasher: func(key string) int {
@@ -163,6 +204,7 @@ func writeMapOutput(mapID, nReduce int, kvs []KeyValue) {
 	reduceID := -1 // reduce task id of the current output file
 	var file *os.File
 
+	out := map[int]string{}
 	for _, kv := range kvs {
 		// Get correct file
 		rid := ihash(kv.Key) % nReduce
@@ -173,19 +215,25 @@ func writeMapOutput(mapID, nReduce int, kvs []KeyValue) {
 			}
 
 			// Open new file
-			file, _ = os.Create(fmt.Sprintf("mr-%d-%d", mapID, rid))
+			filename := fmt.Sprintf("mr-%d-%d", mapID, rid)
+			file, _ = os.Create(filename)
 			reduceID = rid
+			out[rid] = filename
 		}
 
 		enc := json.NewEncoder(file)
 		if err := enc.Encode(&kv); err != nil {
 			log.Println(err)
+			return nil, err
 		}
 	}
 
 	if file != nil {
-		file.Close()
+		if err := file.Close(); err != nil {
+			return nil, err
+		}
 	}
+	return out, nil
 }
 
 func (t *Tasker) IsIdle() bool {
@@ -211,6 +259,7 @@ func askForTask() (WorkerTask, bool) {
 	if !ok {
 		return WorkerTask{}, false
 	}
+	log.Printf("received a new task: map = %v, id = %v", reply.IsMap, reply.ID)
 	return WorkerTask{
 		filenames: reply.Filenames,
 		isMap:     reply.IsMap,
@@ -288,7 +337,7 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 		return true
 	}
 
-	fmt.Println(err)
+	log.Println(err)
 	return false
 }
 

@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -16,10 +17,11 @@ type Master struct {
 }
 
 type MapMaster struct {
-	mapTasks []*MasterMapTask
-	nMapDone int
-	nReduce  int
-	lock     sync.RWMutex
+	tasks       []*MasterMapTask
+	nMapDone    int
+	nReduce     int
+	reduceInput chan MasterReduceInput // to send map output files
+	lock        sync.RWMutex
 }
 
 type MasterMapTask struct {
@@ -29,7 +31,21 @@ type MasterMapTask struct {
 	nReduce  int
 }
 
+type MasterReduceTask struct {
+	filenames []string
+	status    TaskStatus
+	id        int
+}
+
 type ReduceMaster struct {
+	inputs chan MasterReduceInput
+	tasks  map[int]*MasterReduceTask
+	lock   sync.RWMutex
+}
+
+type MasterReduceInput struct {
+	ids       []int // partition id
+	filenames []string
 }
 
 type TaskStatus int
@@ -54,21 +70,44 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 
 func (m *Master) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) error {
 	// TODO: allow worker to start shuffling phase as soon as first map finished
-	if task, ok := m.mapMaster.BookIdleTask(); ok {
+	if !m.mapMaster.AllDone() {
 		// Map phase
-		reply.Filenames = []string{task.filename}
-		reply.IsMap = true
-		reply.NumReduce = task.nReduce
-		reply.ID = task.id
+		if task, ok := m.mapMaster.BookIdleTask(); ok {
+			reply.Filenames = []string{task.filename}
+			reply.IsMap = true
+			reply.NumReduce = task.nReduce
+			reply.ID = task.id
+		} else {
+			return fmt.Errorf("no more map task, please wait")
+		}
 	} else {
+		if task, ok := m.reduceMaster.BookIdleTask(); ok {
+			reply.Filenames = task.filenames
+			reply.IsMap = false
+			reply.ID = task.id
+		} else {
+			return fmt.Errorf("no more reduce task, please wait")
+		}
 	}
 	return nil
 }
 
+func (m *Master) NotifyTaskComplete(args *TaskCompletedArgs, reply *TaskCompletedReply) error {
+	if args.IsMap {
+		m.mapMaster.MarkTaskComplete(args.ID, args.OutputFiles)
+	} else {
+		m.reduceMaster.MarkTaskComplete(args.ID, args.OutputFiles)
+	}
+	return nil
+}
+
+// BookIdleTask returns an idle map task if there's one available
+// It also indicates whether all map tasks are completed
+// Otherwise, it returns an empty task
 func (m *MapMaster) BookIdleTask() (MasterMapTask, bool) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	for i, task := range m.mapTasks {
+	for i, task := range m.tasks {
 		if task.status != Idle {
 			continue
 		}
@@ -79,6 +118,69 @@ func (m *MapMaster) BookIdleTask() (MasterMapTask, bool) {
 		return *task, true
 	}
 	return MasterMapTask{}, false
+}
+
+func (m *MapMaster) AllDone() bool {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+	for _, task := range m.tasks {
+		if task.status != Completed {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *MapMaster) MarkTaskComplete(id int, files map[int]string) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+	log.Printf("map task %d completed, num output file: %v", id, len(files))
+	m.tasks[id].status = Completed
+	input := MasterReduceInput{}
+	for rid, filename := range files {
+		input.filenames = append(input.filenames, filename)
+		input.ids = append(input.ids, rid)
+	}
+	m.reduceInput <- input
+}
+
+func (m *ReduceMaster) process() {
+	for {
+		input := <-m.inputs
+		m.lock.Lock()
+		for i, id := range input.ids {
+			if _, ok := m.tasks[id]; !ok {
+				m.tasks[id] = &MasterReduceTask{
+					filenames: nil,
+					status:    Idle,
+					id:        id,
+				}
+			}
+			m.tasks[id].filenames = append(m.tasks[id].filenames, input.filenames[i])
+		}
+		m.lock.Unlock()
+	}
+}
+
+func (m *ReduceMaster) BookIdleTask() (MasterReduceTask, bool) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+	for _, task := range m.tasks {
+		if task.status != Idle {
+			continue
+		}
+
+		task.status = InProgress // TODO: timeout task after 10s
+		return *task, true
+	}
+	return MasterReduceTask{}, false
+}
+
+func (m *ReduceMaster) MarkTaskComplete(id int, file map[int]string) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+	m.tasks[id].status = Completed
+	log.Printf("reduce task %d completed, output file: %v", id, file[id])
 }
 
 //
@@ -115,22 +217,30 @@ func (m *Master) Done() bool {
 // nReduce is the number of reduce tasks to use.
 //
 func MakeMaster(files []string, nReduce int) *Master {
-	mapTasks := make([]*MasterMapTask, len(files))
+	tasks := make([]*MasterMapTask, len(files))
 	for i, file := range files {
-		mapTasks[i] = &MasterMapTask{
+		tasks[i] = &MasterMapTask{
 			filename: file,
 			status:   Idle,
 		}
 	}
 
+	reduceMaster := &ReduceMaster{
+		inputs: make(chan MasterReduceInput, 100),
+		tasks:  make(map[int]*MasterReduceTask),
+		lock:   sync.RWMutex{},
+	}
+	go reduceMaster.process()
+
 	m := Master{
 		mapMaster: &MapMaster{
-			mapTasks: mapTasks,
-			nMapDone: 0,
-			lock:     sync.RWMutex{},
-			nReduce:  nReduce,
+			tasks:       tasks,
+			nMapDone:    0,
+			lock:        sync.RWMutex{},
+			nReduce:     nReduce,
+			reduceInput: reduceMaster.inputs,
 		},
-		reduceMaster: &ReduceMaster{},
+		reduceMaster: reduceMaster,
 	}
 
 	// Your code here.
