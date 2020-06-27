@@ -140,7 +140,7 @@ func (t *Tasker) doReduce(task WorkerTask) {
 	err := file.Close()
 
 	// Return result to master
-	if err != nil {
+	if err == nil {
 		notifyReduceComplete(task.id, map[int]string{
 			task.id: oname,
 		})
@@ -259,6 +259,11 @@ func askForTask() (WorkerTask, bool) {
 	if !ok {
 		return WorkerTask{}, false
 	}
+
+	if reply.Exit {
+		log.Fatal("received exit request, exiting...")
+	}
+
 	log.Printf("received a new task: map = %v, id = %v", reply.IsMap, reply.ID)
 	return WorkerTask{
 		filenames: reply.Filenames,

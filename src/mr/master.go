@@ -8,6 +8,7 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
+	"time"
 )
 
 type Master struct {
@@ -72,6 +73,7 @@ func (m *Master) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) err
 	// TODO: allow worker to start shuffling phase as soon as first map finished
 	if !m.mapMaster.AllDone() {
 		// Map phase
+		reply.Exit = false
 		if task, ok := m.mapMaster.BookIdleTask(); ok {
 			reply.Filenames = []string{task.filename}
 			reply.IsMap = true
@@ -80,7 +82,8 @@ func (m *Master) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) err
 		} else {
 			return fmt.Errorf("no more map task, please wait")
 		}
-	} else {
+	} else if !m.reduceMaster.AllDone() {
+		reply.Exit = false
 		if task, ok := m.reduceMaster.BookIdleTask(); ok {
 			reply.Filenames = task.filenames
 			reply.IsMap = false
@@ -88,6 +91,8 @@ func (m *Master) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply) err
 		} else {
 			return fmt.Errorf("no more reduce task, please wait")
 		}
+	} else {
+		reply.Exit = true
 	}
 	return nil
 }
@@ -183,6 +188,17 @@ func (m *ReduceMaster) MarkTaskComplete(id int, file map[int]string) {
 	log.Printf("reduce task %d completed, output file: %v", id, file[id])
 }
 
+func (m *ReduceMaster) AllDone() bool {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+	for _, task := range m.tasks {
+		if task.status != Completed {
+			return false
+		}
+	}
+	return true
+}
+
 //
 // start a thread that listens for RPCs from worker.go
 //
@@ -204,9 +220,12 @@ func (m *Master) server() {
 // if the entire job has finished.
 //
 func (m *Master) Done() bool {
-	ret := false
-
 	// Your code here.
+	ret := m.reduceMaster.AllDone() && len(m.reduceMaster.tasks) >= m.mapMaster.nReduce
+	if ret {
+		log.Println("all done, exiting...")
+		time.Sleep(3 * time.Second)
+	}
 
 	return ret
 }

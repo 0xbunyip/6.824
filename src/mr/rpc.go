@@ -32,6 +32,7 @@ type RequestTaskReply struct {
 	IsMap     bool // true for Map task, false for Reduce task
 	ID        int
 	NumReduce int
+	Exit      bool // job finished or something is wrong, worker should exit
 }
 
 type TaskCompletedArgs struct {
