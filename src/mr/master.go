@@ -117,9 +117,10 @@ func (m *MapMaster) BookIdleTask() (MasterMapTask, bool) {
 			continue
 		}
 
-		task.status = InProgress // TODO: timeout task after 10s
+		task.status = InProgress
 		task.id = i
 		task.nReduce = m.nReduce
+		go waitForTask(task)
 		return *task, true
 	}
 	return MasterMapTask{}, false
@@ -175,7 +176,8 @@ func (m *ReduceMaster) BookIdleTask() (MasterReduceTask, bool) {
 			continue
 		}
 
-		task.status = InProgress // TODO: timeout task after 10s
+		task.status = InProgress
+		go waitForTask(task)
 		return *task, true
 	}
 	return MasterReduceTask{}, false
@@ -221,13 +223,51 @@ func (m *Master) server() {
 //
 func (m *Master) Done() bool {
 	// Your code here.
-	ret := m.reduceMaster.AllDone() && len(m.reduceMaster.tasks) >= m.mapMaster.nReduce
+	ret := m.mapMaster.AllDone() && m.reduceMaster.AllDone()
 	if ret {
 		log.Println("all done, exiting...")
 		time.Sleep(3 * time.Second)
 	}
 
 	return ret
+}
+
+type InProgressTask interface {
+	Status() TaskStatus
+	ID() int
+	SetStatus(s TaskStatus)
+}
+
+func (task *MasterMapTask) Status() TaskStatus {
+	return task.status
+}
+
+func (task *MasterMapTask) ID() int {
+	return task.id
+}
+
+func (task *MasterMapTask) SetStatus(s TaskStatus) {
+	task.status = s
+}
+
+func (task *MasterReduceTask) Status() TaskStatus {
+	return task.status
+}
+
+func (task *MasterReduceTask) SetStatus(s TaskStatus) {
+	task.status = s
+}
+
+func (task *MasterReduceTask) ID() int {
+	return task.id
+}
+
+func waitForTask(task InProgressTask) {
+	time.Sleep(10 * time.Second)
+	if task.Status() == InProgress {
+		log.Printf("task %d exceed deadline, put it back to queue", task.ID())
+		task.SetStatus(Idle)
+	}
 }
 
 //
